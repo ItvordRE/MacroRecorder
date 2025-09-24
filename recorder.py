@@ -1,6 +1,6 @@
 import time
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox, scrolledtext, filedialog
 from pynput import mouse, keyboard
 import json
 import threading
@@ -180,11 +180,13 @@ class RecorderApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Macro Recorder with Plugins")
-        self.root.geometry("700x600")
+        self.root.geometry("750x650")
         
         self.events = []
         self.recording = False
         self.playing = False
+        self.stop_playback_flag = False
+        self.loop_macro = False
         self.current_plugin = None
         
         # Регистрируем плагины
@@ -252,13 +254,37 @@ class RecorderApp:
                                  command=self.play_recording, state=tk.DISABLED)
         self.play_btn.grid(row=0, column=1, padx=5)
         
+        self.stop_btn = ttk.Button(button_frame, text="Стоп", 
+                                 command=self.stop_playback, state=tk.DISABLED)
+        self.stop_btn.grid(row=0, column=2, padx=5)
+        
         self.clear_btn = ttk.Button(button_frame, text="Очистить", 
                                   command=self.clear_events)
-        self.clear_btn.grid(row=0, column=2, padx=5)
+        self.clear_btn.grid(row=0, column=3, padx=5)
+        
+        # Additional controls frame
+        additional_frame = ttk.Frame(main_frame)
+        additional_frame.grid(row=4, column=0, columnspan=3, pady=(0, 10))
+        
+        # Loop checkbox
+        self.loop_var = tk.BooleanVar()
+        self.loop_check = ttk.Checkbutton(additional_frame, text="Зациклить макрос", 
+                                        variable=self.loop_var)
+        self.loop_check.grid(row=0, column=0, padx=5)
+        
+        # Save macro button
+        self.save_macro_btn = ttk.Button(additional_frame, text="Сохранить макрос", 
+                                       command=self.save_macro, state=tk.DISABLED)
+        self.save_macro_btn.grid(row=0, column=1, padx=5)
+        
+        # Load macro button
+        self.load_macro_btn = ttk.Button(additional_frame, text="Загрузить макрос", 
+                                       command=self.load_macro)
+        self.load_macro_btn.grid(row=0, column=2, padx=5)
         
         # Status frame
         status_frame = ttk.LabelFrame(main_frame, text="Статус", padding="10")
-        status_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        status_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
         self.status_var = tk.StringVar(value="Готов к работе")
         self.status_label = ttk.Label(status_frame, textvariable=self.status_var,
@@ -270,7 +296,7 @@ class RecorderApp:
         
         # Events info
         info_frame = ttk.LabelFrame(main_frame, text="Информация о записи", padding="10")
-        info_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        info_frame.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
         self.events_count_var = tk.StringVar(value="Записанных событий: 0")
         ttk.Label(info_frame, textvariable=self.events_count_var).grid(row=0, column=0, sticky=tk.W)
@@ -280,7 +306,7 @@ class RecorderApp:
         
         # Events log
         log_frame = ttk.LabelFrame(main_frame, text="Лог событий", padding="10")
-        log_frame.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+        log_frame.grid(row=7, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         self.log_text = scrolledtext.ScrolledText(log_frame, height=12, width=60)
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -289,7 +315,7 @@ class RecorderApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(6, weight=1)
+        main_frame.rowconfigure(7, weight=1)
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         status_frame.columnconfigure(1, weight=1)
@@ -390,7 +416,7 @@ class RecorderApp:
         
         if count > 1:
             # Для пресетов используем относительное время
-            if 'time' in self.events[0]:
+            if count > 0 and 'time' in self.events[0]:
                 duration = max(event.get('time', 0) for event in self.events)
             else:
                 duration = count * 0.5  # Примерная длительность
@@ -401,8 +427,11 @@ class RecorderApp:
         # Enable/disable play button
         if count > 0 and not self.recording:
             self.play_btn.config(state=tk.NORMAL)
+            self.save_macro_btn.config(state=tk.NORMAL)
         else:
             self.play_btn.config(state=tk.DISABLED)
+            if count == 0:
+                self.save_macro_btn.config(state=tk.DISABLED)
     
     def toggle_recording(self):
         """Start or stop recording"""
@@ -417,6 +446,8 @@ class RecorderApp:
         self.events.clear()
         self.record_btn.config(text="Остановить запись")
         self.play_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.DISABLED)
+        self.save_macro_btn.config(state=tk.DISABLED)
         self.progress.start()
         self.status_var.set("Запись... Нажмите 'Esc' или 'q' для остановки")
         
@@ -515,14 +546,77 @@ class RecorderApp:
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить файл: {e}")
     
+    def save_macro(self):
+        """Save current macro to a file"""
+        if not self.events:
+            messagebox.showwarning("Предупреждение", "Нет событий для сохранения")
+            return
+            
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            title="Сохранить макрос"
+        )
+        
+        if filename:
+            try:
+                # Добавляем метаданные о макросе
+                macro_data = {
+                    'name': os.path.basename(filename),
+                    'game': self.game_var.get(),
+                    'created': time.strftime("%Y-%m-%d %H:%M:%S"),
+                    'events_count': len(self.events),
+                    'actions': self.events
+                }
+                
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(macro_data, f, indent=2, ensure_ascii=False)
+                
+                self.log_message(f"Макрос сохранен в {filename}")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось сохранить файл: {e}")
+    
+    def load_macro(self):
+        """Load macro from a file"""
+        filename = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            title="Загрузить макрос"
+        )
+        
+        if filename:
+            try:
+                with open(filename, 'r', encoding='utf-8') as f:
+                    macro_data = json.load(f)
+                
+                # Проверяем формат файла
+                if 'actions' in macro_data:
+                    self.events = macro_data['actions']
+                    self.update_info()
+                    self.log_message(f"Загружен макрос из {filename}")
+                    self.log_message(f"Действий: {len(self.events)}")
+                    
+                    # Если в файле есть информация о игре, пытаемся переключиться
+                    if 'game' in macro_data:
+                        game_name = macro_data['game']
+                        if game_name in self.plugins:
+                            self.game_var.set(game_name)
+                            self.on_game_selected()
+                else:
+                    messagebox.showerror("Ошибка", "Неверный формат файла макроса")
+                    
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось загрузить файл: {e}")
+    
     def play_recording(self):
         """Play recorded events in separate thread"""
         if self.playing or len(self.events) == 0:
             return
             
         self.playing = True
+        self.stop_playback_flag = False
         self.record_btn.config(state=tk.DISABLED)
         self.play_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
         self.progress.start()
         self.status_var.set("Воспроизведение...")
         
@@ -531,56 +625,96 @@ class RecorderApp:
         thread.daemon = True
         thread.start()
     
+    def stop_playback(self):
+        """Stop playback"""
+        self.stop_playback_flag = True
+        self.status_var.set("Остановка воспроизведения...")
+    
     def _playback_thread(self):
         """Playback thread function"""
         try:
             mouse_ctrl = mouse.Controller()
             keyboard_ctrl = keyboard.Controller()
             
-            # Определяем начальное время
-            if self.events and 'time' in self.events[0]:
-                # Для записанных событий
-                start_time = self.events[0]['time']
-            else:
-                # Для пресетов
-                start_time = time.time()
+            # Запоминаем начальную позицию мыши для восстановления
+            initial_pos = mouse_ctrl.position
             
-            for i, event in enumerate(self.events):
-                # Обработка плагином
-                if self.current_plugin:
-                    event = self.current_plugin.post_process_event(event)
+            # Цикл воспроизведения
+            loop_count = 0
+            while not self.stop_playback_flag and (self.loop_var.get() or loop_count == 0):
+                if loop_count > 0:
+                    self.root.after(0, lambda: self.log_message(f"Повтор макроса (цикл {loop_count + 1})"))
                 
-                # Calculate delay
-                if 'time' in event:
-                    if i == 0:
-                        delay = 0
-                    else:
-                        delay = event['time'] - start_time
-                        if delay < 0:
-                            delay = 0
+                # Определяем начальное время
+                if self.events and 'time' in self.events[0]:
+                    # Для записанных событий
+                    start_time = self.events[0]['time']
                 else:
-                    # Для пресетов без времени - фиксированная задержка
-                    delay = 0.5
+                    # Для пресетов
+                    start_time = time.time()
                 
-                if i > 0:
-                    time.sleep(delay)
-                
-                # Execute event
-                if event['type'] == 'click':
-                    self.root.after(0, lambda e=event: self.log_message(f"Воспроизведение: клик ({e['x']}, {e['y']})"))
-                    mouse_ctrl.position = (event['x'], event['y'])
-                    mouse_ctrl.click(mouse.Button[event['button']])
-                
-                elif event['type'] == 'key_press':
-                    self.root.after(0, lambda e=event: self.log_message(f"Воспроизведение: клавиша {e['key']}"))
-                    if 'Key.' in event['key']:
-                        key_name = event['key'].replace('Key.', '')
-                        key_obj = getattr(keyboard.Key, key_name, None)
-                        if key_obj:
-                            keyboard_ctrl.press(key_obj)
-                            keyboard_ctrl.release(key_obj)
+                for i, event in enumerate(self.events):
+                    # Проверяем флаг остановки
+                    if self.stop_playback_flag:
+                        break
+                    
+                    # Обработка плагином
+                    if self.current_plugin:
+                        event = self.current_plugin.post_process_event(event)
+                    
+                    # Calculate delay
+                    if 'time' in event:
+                        if i == 0:
+                            delay = 0
+                        else:
+                            delay = event['time'] - start_time
+                            if delay < 0:
+                                delay = 0
                     else:
-                        keyboard_ctrl.type(event['key'])
+                        # Для пресетов без времени - фиксированная задержка
+                        delay = 0.5
+                    
+                    if i > 0:
+                        # Разбиваем задержку на небольшие интервалы для возможности прерывания
+                        sleep_interval = 0.1
+                        while delay > 0 and not self.stop_playback_flag:
+                            if delay > sleep_interval:
+                                time.sleep(sleep_interval)
+                                delay -= sleep_interval
+                            else:
+                                time.sleep(delay)
+                                break
+                    
+                    # Проверяем флаг остановки снова после задержки
+                    if self.stop_playback_flag:
+                        break
+                    
+                    # Execute event
+                    if event['type'] == 'click':
+                        self.root.after(0, lambda e=event: self.log_message(f"Воспроизведение: клик ({e['x']}, {e['y']})"))
+                        mouse_ctrl.position = (event['x'], event['y'])
+                        mouse_ctrl.click(mouse.Button[event['button']])
+                    
+                    elif event['type'] == 'key_press':
+                        self.root.after(0, lambda e=event: self.log_message(f"Воспроизведение: клавиша {e['key']}"))
+                        if 'Key.' in event['key']:
+                            key_name = event['key'].replace('Key.', '')
+                            key_obj = getattr(keyboard.Key, key_name, None)
+                            if key_obj:
+                                keyboard_ctrl.press(key_obj)
+                                keyboard_ctrl.release(key_obj)
+                        else:
+                            keyboard_ctrl.type(event['key'])
+                
+                loop_count += 1
+                
+                # Если не зациклено, выходим из цикла
+                if not self.loop_var.get():
+                    break
+            
+            # Восстанавливаем позицию мыши
+            if not self.stop_playback_flag:
+                mouse_ctrl.position = initial_pos
             
             # Update UI after playback
             self.root.after(0, self._playback_finished)
@@ -593,15 +727,22 @@ class RecorderApp:
         self.playing = False
         self.record_btn.config(state=tk.NORMAL)
         self.play_btn.config(state=tk.NORMAL)
+        self.stop_btn.config(state=tk.DISABLED)
         self.progress.stop()
-        self.status_var.set("Воспроизведение завершено")
-        self.log_message("Воспроизведение завершено")
+        
+        if self.stop_playback_flag:
+            self.status_var.set("Воспроизведение остановлено")
+            self.log_message("Воспроизведение остановлено пользователем")
+        else:
+            self.status_var.set("Воспроизведение завершено")
+            self.log_message("Воспроизведение завершено")
     
     def _playback_error(self, error_msg):
         """Called when playback encounters an error"""
         self.playing = False
         self.record_btn.config(state=tk.NORMAL)
         self.play_btn.config(state=tk.NORMAL)
+        self.stop_btn.config(state=tk.DISABLED)
         self.progress.stop()
         self.status_var.set("Ошибка воспроизведения")
         messagebox.showerror("Ошибка", f"Ошибка при воспроизведении: {error_msg}")
@@ -621,6 +762,8 @@ class RecorderApp:
     
     def on_closing(self):
         """Handle application closing"""
+        self.stop_playback_flag = True  # Останавливаем воспроизведение если активно
+        
         if self.recording:
             self.stop_recording()
         if hasattr(self, 'mouse_listener') and self.mouse_listener.is_alive():
