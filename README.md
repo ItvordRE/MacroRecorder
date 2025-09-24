@@ -1,6 +1,6 @@
 # Macro Recorder
 
-Python macro recorder with GUI and plugins for games like CS2, Dota 2,B&S etc.
+Python macro recorder with GUI and plugins for games like CS2, Dota 2, B&S etc.
 
 ## Features
 - Record mouse and keyboard actions
